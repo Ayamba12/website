@@ -4,8 +4,11 @@ from flask import Blueprint, request, jsonify
 from app.extensions import db
 from app.models import User, UserRole, UserType, Opportunity, OpportunityStatus, TestAttempt
 from app.auth.decorators import admin_required, role_required
+from app.services.crawler_service import run_crawl
 
 bp = Blueprint("admin", __name__, url_prefix="/api/admin")
+
+MAX_CRAWL_ITEMS = 10  # hard server-side ceiling regardless of what the client requests
 
 
 @bp.get("/dashboard")
@@ -51,6 +54,26 @@ def dashboard(**kwargs):
             },
         }
     )
+
+
+@bp.post("/crawler/run")
+@admin_required
+def run_crawler(**kwargs):
+    """Runs the lightweight opportunity crawler synchronously (Render's free
+    tier has no background workers) and creates any new finds as
+    pending_review drafts — never published automatically. Capped small on
+    purpose: this is meant for "find me a few new scholarships," not a bulk
+    scrape, and runs inside a single HTTP request."""
+    data = request.get_json(silent=True) or {}
+    max_items = data.get("max_items", 4)
+    try:
+        max_items = int(max_items)
+    except (TypeError, ValueError):
+        max_items = 4
+    max_items = max(1, min(max_items, MAX_CRAWL_ITEMS))
+
+    result = run_crawl(max_items=max_items)
+    return jsonify(result)
 
 
 @bp.get("/users")

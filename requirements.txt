@@ -7,4 +7,7 @@ python-dotenv==1.0.1
 psycopg[binary]==3.2.10
 boto3==1.35.0
 gunicorn==22.0.0
+requests==2.32.3
+beautifulsoup4==4.12.3
+python-dateutil==2.9.0.post0
 pytest==8.2.2
