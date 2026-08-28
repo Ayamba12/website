@@ -38,10 +38,30 @@ PER_DOMAIN_DELAY_SECONDS = 3
 
 # Only sources whose robots.txt has been manually checked and found
 # permissive belong here — same rule as content_agent/config/sources.yaml.
+# Checked and deliberately left OUT as of 2026-08-28:
+#   - opportunitydesk.org: robots.txt reserves rights under the EU Copyright
+#     Directive's text-and-data-mining opt-out (Article 4) rather than a
+#     plain allow/disallow — ambiguous enough to skip rather than assume.
+#   - scholarship-positions.com: robots.txt request itself is blocked by a
+#     Cloudflare bot challenge — respecting that, not working around it.
+#   - youthop.com: /robots.txt redirects to the homepage instead of a real
+#     robots.txt or a 404 — too ambiguous to treat as "unrestricted."
 CRAWLER_SOURCES = [
     {
         "name": "opportunities_for_africans",
         "url": "https://www.opportunitiesforafricans.com/category/scholarships/",
+    },
+    {
+        "name": "opportunities_guide",
+        "url": "https://opportunitiesguide.com/category/scholarships/",
+    },
+    {
+        "name": "after_school_africa",
+        "url": "https://www.afterschoolafrica.com/scholarship/",
+    },
+    {
+        "name": "scholars4dev",
+        "url": "https://www.scholars4dev.com/",
     },
 ]
 
@@ -155,6 +175,13 @@ class _Fetcher:
 
 def _discover_candidate_links(listing_url: str, html: str, max_items: int) -> list[str]:
     soup = BeautifulSoup(html, "html.parser")
+    # Site navigation links (e.g. a "WhatsApp alerts" signup page linked from
+    # the header nav) can have a long, real-looking slug and match a keyword
+    # by coincidence ("opportunity") without being an opportunity listing at
+    # all. Structural nav/header/footer regions are never where individual
+    # posts live, so drop them before even considering their links.
+    for tag in soup(["nav", "header", "footer"]):
+        tag.decompose()
     domain = urlparse(listing_url).netloc
     seen: set[str] = set()
     candidates: list[str] = []
@@ -164,7 +191,7 @@ def _discover_candidate_links(listing_url: str, html: str, max_items: int) -> li
         if not href or href.startswith("#") or href.startswith("mailto:"):
             continue
 
-        full_url = urljoin(listing_url, href).split("#", 1)[0]
+        full_url = urljoin(listing_url, href).split("#", 1)[0].rstrip("/")
         if urlparse(full_url).netloc != domain:
             continue
         if full_url.lower().endswith(".pdf"):
@@ -172,6 +199,16 @@ def _discover_candidate_links(listing_url: str, html: str, max_items: int) -> li
 
         path = urlparse(full_url).path.lower()
         if any(marker in path for marker in EXCLUDED_PATH_MARKERS):
+            continue
+
+        # A same-domain link whose final slug is only 1-2 words (e.g.
+        # "/scholarships") is almost always a category/hub/index page, never
+        # a single opportunity post — real posts have long descriptive slugs
+        # (e.g. "kfw-eac-masters-scholarships-2026-2027"). Catches hub pages
+        # that don't happen to sit under "/category/" like the ones
+        # EXCLUDED_PATH_MARKERS already filters.
+        last_segment = path.rsplit("/", 1)[-1]
+        if last_segment and len(last_segment.split("-")) < 3:
             continue
 
         text = (a.get_text() or "").strip().lower()

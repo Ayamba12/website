@@ -38,6 +38,9 @@ DETAIL_HTML = """
 """
 
 
+SINGLE_TEST_SOURCE = [{"name": "opportunities_for_africans", "url": "https://www.opportunitiesforafricans.com/category/scholarships/"}]
+
+
 def _fake_fetch(url):
     resp = MagicMock()
     if "mastercard-scholars-2027" in url:
@@ -48,14 +51,14 @@ def _fake_fetch(url):
 
 
 def test_run_crawl_creates_a_pending_review_opportunity(app):
-    with app.app_context():
+    with app.app_context(), patch.object(crawler_service, "CRAWLER_SOURCES", SINGLE_TEST_SOURCE):
         with patch.object(crawler_service._Fetcher, "fetch", side_effect=_fake_fetch):
             result = crawler_service.run_crawl(max_items=4)
 
         assert result["created"] == 1
         assert result["skipped_duplicate"] == 0
 
-        opp = Opportunity.query.filter_by(source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027/").first()
+        opp = Opportunity.query.filter_by(source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027").first()
         assert opp is not None
         assert opp.title == "Mastercard Scholars Program 2027"
         assert opp.status == OpportunityStatus.PENDING_REVIEW
@@ -72,14 +75,14 @@ def test_run_crawl_creates_a_pending_review_opportunity(app):
 
 
 def test_run_crawl_skips_existing_source_url(app):
-    with app.app_context():
+    with app.app_context(), patch.object(crawler_service, "CRAWLER_SOURCES", SINGLE_TEST_SOURCE):
         existing = Opportunity(
             title="Already Known",
             slug="already-known",
             status=OpportunityStatus.PENDING_REVIEW,
             verification_status=VerificationStatus.PENDING,
             source_type=SourceType.AI_AGENT,
-            source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027/",
+            source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027",
         )
         db.session.add(existing)
         db.session.commit()
@@ -92,7 +95,7 @@ def test_run_crawl_skips_existing_source_url(app):
 
 
 def test_run_crawl_matches_existing_category_case_insensitively(app):
-    with app.app_context():
+    with app.app_context(), patch.object(crawler_service, "CRAWLER_SOURCES", SINGLE_TEST_SOURCE):
         category = OpportunityCategory(name="Scholarship", slug="scholarship")
         db.session.add(category)
         db.session.commit()
@@ -100,17 +103,31 @@ def test_run_crawl_matches_existing_category_case_insensitively(app):
         with patch.object(crawler_service._Fetcher, "fetch", side_effect=_fake_fetch):
             crawler_service.run_crawl(max_items=4)
 
-        opp = Opportunity.query.filter_by(source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027/").first()
+        opp = Opportunity.query.filter_by(source_url="https://www.opportunitiesforafricans.com/mastercard-scholars-2027").first()
         assert opp.category_id == category.id
 
 
 def test_run_crawl_handles_fetch_failure_without_crashing(app):
-    with app.app_context():
+    with app.app_context(), patch.object(crawler_service, "CRAWLER_SOURCES", SINGLE_TEST_SOURCE):
         with patch.object(crawler_service._Fetcher, "fetch", return_value=None):
             result = crawler_service.run_crawl(max_items=4)
 
         assert result["created"] == 0
         assert len(result["errors"]) == 1
+
+
+def test_run_crawl_stops_across_sources_once_max_items_reached(app):
+    many_sources = [
+        {"name": "source_a", "url": "https://source-a.example/scholarships/"},
+        {"name": "source_b", "url": "https://source-b.example/scholarships/"},
+    ]
+    with app.app_context(), patch.object(crawler_service, "CRAWLER_SOURCES", many_sources):
+        with patch.object(crawler_service._Fetcher, "fetch", side_effect=_fake_fetch):
+            result = crawler_service.run_crawl(max_items=1)
+
+        # Even with two sources each offering a candidate, the run must stop
+        # at the requested cap rather than crawling every source regardless.
+        assert result["created"] == 1
 
 
 def test_extract_fields_separates_short_and_full_description():
@@ -130,3 +147,46 @@ def test_extract_fields_falls_back_to_short_description_when_no_paragraphs():
     )
     fields = crawler_service._extract_fields(html)
     assert fields["full_description"] == "A short summary only."
+
+
+def test_discover_candidate_links_excludes_generic_hub_pages():
+    # Reproduces a real bug: a category/hub page like "/scholarships/" (no
+    # "/category/" prefix, so EXCLUDED_PATH_MARKERS alone doesn't catch it)
+    # was being extracted as if it were a single opportunity post.
+    html = """
+    <html><body>
+      <a href="/scholarships/">Find Scholarships to Fund Your Study Abroad</a>
+      <a href="/kfw-eac-masters-scholarships-2026-2027/">KfW EAC Masters Scholarships 2026/2027</a>
+    </body></html>
+    """
+    links = crawler_service._discover_candidate_links("https://example.com/", html, max_items=10)
+    assert not any(link.endswith("/scholarships") for link in links)
+    assert "https://example.com/kfw-eac-masters-scholarships-2026-2027" in links
+
+
+def test_discover_candidate_links_ignores_nav_and_header_links():
+    # Reproduces a real bug: "ASA Opportunity Alerts", a WhatsApp signup
+    # page linked from the site's header nav, matched the "opportunity"
+    # keyword and had a long enough slug to pass the hub-page heuristic —
+    # it isn't a listing at all, it just lives in a nav/header region.
+    html = """
+    <html><body>
+      <header><a href="/asa-opportunity-alerts/">Opportunity Alerts</a></header>
+      <nav><a href="/opportunity-newsletter-signup/">Opportunity Newsletter</a></nav>
+      <main><a href="/kfw-eac-masters-scholarships-2026-2027/">KfW EAC Masters Scholarships</a></main>
+      <footer><a href="/opportunity-terms-of-use/">Opportunity Terms</a></footer>
+    </body></html>
+    """
+    links = crawler_service._discover_candidate_links("https://example.com/", html, max_items=10)
+    assert links == ["https://example.com/kfw-eac-masters-scholarships-2026-2027"]
+
+
+def test_discover_candidate_links_normalizes_trailing_slash():
+    html = """
+    <html><body>
+      <a href="/kfw-eac-masters-scholarships-2026-2027/">Link with trailing slash</a>
+      <a href="/kfw-eac-masters-scholarships-2026-2027">Same link, no trailing slash</a>
+    </body></html>
+    """
+    links = crawler_service._discover_candidate_links("https://example.com/", html, max_items=10)
+    assert links.count("https://example.com/kfw-eac-masters-scholarships-2026-2027") == 1
