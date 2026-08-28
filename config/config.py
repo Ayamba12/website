@@ -25,6 +25,7 @@ class BaseConfig:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
     AI_AGENT_API_KEY = os.environ.get("AI_AGENT_API_KEY", "")
+    FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173")
     ITEMS_PER_PAGE = 20
     MAX_ITEMS_PER_PAGE = 100
 

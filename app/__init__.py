@@ -47,6 +47,7 @@ def register_blueprints(app):
     from app.routes.study_materials import bp as study_materials_bp
     from app.routes.admin import bp as admin_bp
     from app.routes.uploads import bp as uploads_bp
+    from app.routes.sitemap import bp as sitemap_bp
 
     for blueprint in (
         auth_bp,
@@ -59,6 +60,7 @@ def register_blueprints(app):
         study_materials_bp,
         admin_bp,
         uploads_bp,
+        sitemap_bp,
     ):
         app.register_blueprint(blueprint)
 
