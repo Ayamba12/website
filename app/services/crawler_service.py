@@ -212,6 +212,27 @@ def _guess_deadline(text: str) -> datetime | None:
         return None
 
 
+def _extract_short_description(soup: BeautifulSoup) -> str:
+    """A concise ~1-2 sentence summary for short_description (the SEO meta
+    description field) — the page's own meta description if present, since
+    site owners usually already write these to a sensible length."""
+    meta = soup.find("meta", attrs={"name": "description"})
+    if meta and meta.get("content"):
+        return _clean_text(meta["content"])
+    p = soup.find("p")
+    return _clean_text(p.get_text()) if p else ""
+
+
+def _extract_full_description(soup: BeautifulSoup) -> str:
+    """The full description field needs real substance (the admin SEO
+    checker flags anything under ~60 words) — a single meta description or
+    first paragraph is nowhere near enough, so this joins every paragraph
+    on the page instead, capped to a sane length."""
+    paragraphs = [_clean_text(p.get_text()) for p in soup.find_all("p")]
+    paragraphs = [p for p in paragraphs if p]
+    return " ".join(paragraphs)[:3000]
+
+
 def _extract_fields(html: str) -> dict:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header"]):
@@ -222,18 +243,22 @@ def _extract_fields(html: str) -> dict:
         h1 = soup.find("h1")
         title = _clean_text(h1.get_text()) if h1 else ""
 
-    meta = soup.find("meta", attrs={"name": "description"})
-    if meta and meta.get("content"):
-        description = _clean_text(meta["content"])
-    else:
-        p = soup.find("p")
-        description = _clean_text(p.get_text()) if p else ""
+    short_description = _extract_short_description(soup)
+    full_description = _extract_full_description(soup)
+    if not full_description:
+        full_description = short_description  # last-resort fallback, better than nothing
 
     body_text = _clean_text(soup.get_text(" "))
-    category_name = _guess_category_name(f"{title} {description} {body_text[:2000]}")
+    category_name = _guess_category_name(f"{title} {short_description} {body_text[:2000]}")
     deadline = _guess_deadline(body_text)
 
-    return {"title": title, "description": description, "category_name": category_name, "deadline": deadline}
+    return {
+        "title": title,
+        "short_description": short_description,
+        "full_description": full_description,
+        "category_name": category_name,
+        "deadline": deadline,
+    }
 
 
 def run_crawl(max_items: int = 4) -> dict:
@@ -291,8 +316,8 @@ def run_crawl(max_items: int = 4) -> dict:
             opp = Opportunity(
                 title=fields["title"],
                 slug=unique_slug(fields["title"], Opportunity),
-                short_description=fields["description"] or None,
-                description=fields["description"] or None,
+                short_description=fields["short_description"] or None,
+                description=fields["full_description"] or None,
                 status=OpportunityStatus.PENDING_REVIEW,
                 verification_status=VerificationStatus.PENDING,
                 source_type=SourceType.AI_AGENT,

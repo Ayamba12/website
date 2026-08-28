@@ -22,6 +22,17 @@ DETAIL_HTML = """
 <body><main>
   <h1>Mastercard Scholars Program 2027</h1>
   <p>Deadline: 15 December 2026 Apply now for this fully funded scholarship.</p>
+  <p>The Mastercard Scholars Program supports academically talented young Africans
+     who face financial constraints from accessing quality secondary and university
+     education. Scholars receive comprehensive support including tuition, accommodation,
+     travel and a living stipend for the full duration of their studies.</p>
+  <p>Applicants must be citizens of an African country, demonstrate strong academic
+     performance, and show clear leadership potential within their community. Priority
+     is given to applicants from underserved regions who intend to return home after
+     completing their studies to contribute to local development.</p>
+  <p>The application process involves an online form, two reference letters, a
+     personal statement, and for shortlisted candidates, a virtual interview with
+     the selection committee before final offers are made in the following term.</p>
 </main></body>
 </html>
 """
@@ -51,6 +62,13 @@ def test_run_crawl_creates_a_pending_review_opportunity(app):
         assert opp.verification_status == VerificationStatus.PENDING
         assert opp.source_type == SourceType.AI_AGENT
         assert opp.deadline is not None
+
+        # short_description and description must NOT be the same text —
+        # the admin SEO checker flags descriptions under ~60 words, and a
+        # meta description alone is nowhere near that.
+        assert opp.short_description == "Fully funded scholarship for African students."
+        assert opp.description != opp.short_description
+        assert len(opp.description.split()) >= 60
 
 
 def test_run_crawl_skips_existing_source_url(app):
@@ -93,3 +111,22 @@ def test_run_crawl_handles_fetch_failure_without_crashing(app):
 
         assert result["created"] == 0
         assert len(result["errors"]) == 1
+
+
+def test_extract_fields_separates_short_and_full_description():
+    fields = crawler_service._extract_fields(DETAIL_HTML)
+
+    assert fields["short_description"] == "Fully funded scholarship for African students."
+    assert fields["full_description"] != fields["short_description"]
+    assert "leadership potential" in fields["full_description"]
+    assert len(fields["full_description"].split()) >= 60
+
+
+def test_extract_fields_falls_back_to_short_description_when_no_paragraphs():
+    html = (
+        "<html><head><title>Test</title>"
+        '<meta name="description" content="A short summary only.">'
+        "</head><body></body></html>"
+    )
+    fields = crawler_service._extract_fields(html)
+    assert fields["full_description"] == "A short summary only."
