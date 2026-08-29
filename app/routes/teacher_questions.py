@@ -136,6 +136,36 @@ def admin_list_questions(**kwargs):
     return jsonify(result)
 
 
+@bp.post("/questions/bulk")
+@admin_required
+def bulk_question_action(**kwargs):
+    data = request.get_json(silent=True) or {}
+    ids = data.get("ids") or []
+    action = data.get("action")
+
+    questions = TeacherQuestion.query.filter(TeacherQuestion.id.in_(ids)).all()
+    if not questions:
+        return jsonify({"error": "No matching questions"}), 404
+
+    if action == "publish":
+        for q in questions:
+            q.status = QuestionStatus.PUBLISHED
+    elif action == "unpublish":
+        for q in questions:
+            q.status = QuestionStatus.DRAFT
+    elif action == "reject":
+        for q in questions:
+            q.status = QuestionStatus.REJECTED
+    elif action == "delete":
+        for q in questions:
+            db.session.delete(q)
+    else:
+        return jsonify({"error": "Unknown action"}), 400
+
+    db.session.commit()
+    return jsonify({"message": f"Bulk action '{action}' applied to {len(questions)} question(s)"})
+
+
 REQUIRED_IMPORT_FIELDS = ("question", "correct_answer")
 
 
