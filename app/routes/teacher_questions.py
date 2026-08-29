@@ -191,6 +191,10 @@ def _validate_import_row(row):
     }
 
 
+def _normalize_question_text(text):
+    return " ".join((text or "").split()).lower()
+
+
 @bp.post("/questions/bulk-import")
 @admin_required
 def bulk_import_questions(**kwargs):
@@ -199,11 +203,20 @@ def bulk_import_questions(**kwargs):
     Body: { rows: [ {question, option_a..d, correct_answer, explanation,
                       topic, difficulty, content_type, year, source}, ... ],
             dry_run: bool }
-    Invalid rows are never inserted; the response reports success/failure per row.
+    Invalid rows are never inserted. Rows whose question text already exists
+    — either elsewhere in this same file or already in the database from a
+    prior import — are flagged as duplicates and skipped rather than
+    inserted again, so re-uploading the same file (or overlapping files)
+    never creates copies.
     """
     data = request.get_json(silent=True) or {}
     rows = data.get("rows") or []
     dry_run = bool(data.get("dry_run"))
+
+    existing_texts = {
+        _normalize_question_text(t) for (t,) in db.session.query(TeacherQuestion.question_text).all()
+    }
+    seen_in_batch = set()
 
     results = []
     valid_rows = []
@@ -211,9 +224,16 @@ def bulk_import_questions(**kwargs):
         errors, normalized = _validate_import_row(row)
         if errors:
             results.append({"row": idx, "status": "error", "errors": errors})
-        else:
-            valid_rows.append(normalized)
-            results.append({"row": idx, "status": "valid"})
+            continue
+
+        key = _normalize_question_text(normalized["question_text"])
+        if key in existing_texts or key in seen_in_batch:
+            results.append({"row": idx, "status": "duplicate", "errors": ["This question already exists — skipped."]})
+            continue
+
+        seen_in_batch.add(key)
+        valid_rows.append(normalized)
+        results.append({"row": idx, "status": "valid"})
 
     inserted = 0
     if not dry_run:
@@ -223,12 +243,15 @@ def bulk_import_questions(**kwargs):
         if inserted:
             db.session.commit()
 
+    duplicate_rows = sum(1 for r in results if r["status"] == "duplicate")
+
     return jsonify(
         {
             "dry_run": dry_run,
             "total_rows": len(rows),
             "valid_rows": len(valid_rows),
-            "error_rows": len(rows) - len(valid_rows),
+            "error_rows": len(rows) - len(valid_rows) - duplicate_rows,
+            "duplicate_rows": duplicate_rows,
             "inserted": inserted,
             "results": results,
         }
